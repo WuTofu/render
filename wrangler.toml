@@ -8,12 +8,12 @@ workers_dev = true
 [vars]
 # The `access-control-allow-origin` header: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Origin
 # Optional, the `access-control-allow-origin` header is omitted if unset, which blocks all cross-origin requests.
-ALLOWED_ORIGINS = ""
+ALLOWED_ORIGINS = "*"
 
 # The `cache-control` header: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control.
 # Optional, the `cache-control` header is omitted if unset, which would NOT disable caching: https://developers.cloudflare.com/workers/runtime-apis/cache/#headers
 # For example, you can disable all cache by setting this to `no-store`.
-CACHE_CONTROL = "max-age=86400"
+CACHE_CONTROL = "public, max-age=86400"
 
 # The string to prepend to each file path. Optional, nothing is prepended to the path if unset.
 PATH_PREFIX = ""
@@ -49,13 +49,13 @@ DIRECTORY_CACHE_CONTROL = "no-store"
 LOGGING = true
 
 # Set the number of retries allowed for each R2 operation (-1 for unlimited).
-R2_RETRIES = 0
+R2_RETRIES = 1
 
 [observability]
 enabled = true
 
 [[r2_buckets]]
 binding = "R2_BUCKET"
-bucket_name = "kot"         # Set this to your R2 bucket name. Required
-preview_bucket_name = "kot" # Set this to your preview R2 bucket name. Can be equal to bucket_name. Optional
+bucket_name = "media"         # Set this to your R2 bucket name. Required
+#preview_bucket_name = "kot" # Set this to your preview R2 bucket name. Can be equal to bucket_name. Optional
 #jurisdiction = "eu"        # Set this to "eu" or "us". Optional if the bucket has no jurisdiction restrictions
