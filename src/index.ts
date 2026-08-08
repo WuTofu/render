@@ -6,7 +6,13 @@ import {
   parseRangeHeader,
 } from "./range";
 import { evaluatePreconditions, hasBody, parsePreconditions } from "./conditional";
-import { buildHeaders, corsHeaders, fileHeaders, optionsCorsHeaders } from "./headers";
+import {
+  buildHeaders,
+  corsHeaders,
+  fileHeaders,
+  hasNoStoreDirective,
+  optionsCorsHeaders,
+} from "./headers";
 import { makeListingResponse } from "./listing";
 import { retryAsync } from "./retry";
 
@@ -40,7 +46,7 @@ export default {
 
     let response: Response | undefined;
 
-    const isCachingEnabled = env.CACHE_CONTROL !== "no-store";
+    const isCachingEnabled = !hasNoStoreDirective(env.CACHE_CONTROL);
     const cache = caches.default;
     if (isCachingEnabled) {
       response = await cache.match(request);
@@ -73,7 +79,7 @@ export default {
           let listResponse = await makeListingResponse(path, env, request);
 
           if (listResponse !== null) {
-            if (listResponse.headers.get("cache-control") !== "no-store") {
+            if (!hasNoStoreDirective(listResponse.headers.get("cache-control"))) {
               ctx.waitUntil(cache.put(request, listResponse.clone()));
             }
             return listResponse;
@@ -166,7 +172,7 @@ export default {
           let listResponse = await makeListingResponse(path, env, request);
 
           if (listResponse !== null) {
-            if (listResponse.headers.get("cache-control") !== "no-store") {
+            if (!hasNoStoreDirective(listResponse.headers.get("cache-control"))) {
               ctx.waitUntil(cache.put(request, listResponse.clone()));
             }
             return listResponse;

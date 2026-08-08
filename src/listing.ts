@@ -15,12 +15,13 @@ export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (char) => htmlEscapes[char]);
 }
 
-export function niceBytes(x: number) {
-  let l = 0,
-    n = parseInt(x.toString(), 10) || 0;
+export function niceBytes(x: number): string {
+  let l = 0;
+  let n = Number.isFinite(x) ? x : 0;
 
-  while (n >= 1000 && ++l) {
-    n = n / 1000;
+  while (n >= 1000 && l < units.length - 1) {
+    n /= 1000;
+    l++;
   }
 
   return n.toFixed(n < 10 && l > 0 ? 1 : 0) + " " + units[l];

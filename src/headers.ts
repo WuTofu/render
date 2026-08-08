@@ -56,6 +56,20 @@ export function buildHeaders(
   return headers;
 }
 
+/**
+ * Whether a `cache-control` value carries the `no-store` directive, checked
+ * as one of possibly several comma-separated directives (e.g.
+ * "no-store, max-age=0") rather than as an exact string match.
+ */
+export function hasNoStoreDirective(
+  cacheControl: string | null | undefined
+): boolean {
+  if (!cacheControl) return false;
+  return cacheControl
+    .split(",")
+    .some((directive) => directive.trim().toLowerCase() === "no-store");
+}
+
 /** Cache/CORS validator headers shared by 200/206/304/412 responses for a given object. */
 export function fileHeaders(
   file: R2Object,
