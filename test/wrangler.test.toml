@@ -1,0 +1,25 @@
+name = "render-test"
+main = "../src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ALLOWED_ORIGINS = "*"
+# Caching is disabled for tests so each request is evaluated fresh instead of
+# being served from the Cache API (which matches by URL only, ignoring
+# conditional/range headers) — that's what makes precondition/range tests
+# deterministic across runs.
+CACHE_CONTROL = "no-store"
+PATH_PREFIX = ""
+INDEX_FILE = ""
+NOTFOUND_FILE = ""
+DIRECTORY_LISTING = true
+ITEMS_PER_PAGE = 1000
+HIDE_HIDDEN_FILES = false
+DIRECTORY_CACHE_CONTROL = "no-store"
+LOGGING = false
+R2_RETRIES = 0
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "test-bucket"
