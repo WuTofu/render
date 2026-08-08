@@ -5,8 +5,8 @@ import {
   getRangeHeader,
   parseRangeHeader,
 } from "./range";
-import { hasBody, parsePreconditions } from "./conditional";
-import { corsOriginHeader } from "./headers";
+import { evaluatePreconditions, hasBody, parsePreconditions } from "./conditional";
+import { buildHeaders, corsHeaders, fileHeaders, optionsCorsHeaders } from "./headers";
 import { makeListingResponse } from "./listing";
 import { retryAsync } from "./retry";
 
@@ -28,7 +28,11 @@ export default {
 
     if (request.method === "OPTIONS") {
       return new Response(null, {
-        headers: { allow: allowedMethods.join(", ") },
+        headers: buildHeaders({
+          allow: allowedMethods.join(", "),
+          ...optionsCorsHeaders(allowedMethods),
+          ...corsHeaders(request, env),
+        }),
       });
     }
 
@@ -50,7 +54,13 @@ export default {
         console.warn("Cache MISS for", request.url);
       }
       const url = new URL(request.url);
-      let path = (env.PATH_PREFIX || "") + decodeURIComponent(url.pathname);
+      let decodedPathname: string;
+      try {
+        decodedPathname = decodeURIComponent(url.pathname);
+      } catch {
+        return new Response("Bad Request", { status: 400 });
+      }
+      let path = (env.PATH_PREFIX || "") + decodedPathname;
 
       // directory logic
       if (path.endsWith("/")) {
@@ -77,81 +87,71 @@ export default {
 
       let file: R2Object | R2ObjectBody | null | undefined;
 
-      // Range handling
-      if (request.method === "GET") {
-        const rangeHeader = request.headers.get("range");
-        if (rangeHeader) {
-          file = await retryAsync(env, () => env.R2_BUCKET.head(path));
-          if (file === null)
-            return new Response("File Not Found", { status: 404 });
-          const parsed = parseRangeHeader(file.size, rangeHeader);
-          if (parsed === "unsatisfiable") {
-            return new Response("Range Not Satisfiable", { status: 416 });
-          }
-          range = parsed;
-        }
-      }
-
-      // Etag/If-(Not)-Match handling
       const { ifMatch, ifNoneMatch, ifModifiedSince, ifUnmodifiedSince, ifRange } =
         parsePreconditions(request);
+      const rangeHeader =
+        request.method === "GET" ? request.headers.get("range") : null;
+      const hasPreconditions =
+        ifMatch !== undefined ||
+        ifNoneMatch !== undefined ||
+        ifModifiedSince !== undefined ||
+        ifUnmodifiedSince !== undefined;
 
-      if (range && ifRange && file) {
-        const maybeDate = Date.parse(ifRange);
+      // A HEAD request, a range request, or any precondition needs the
+      // object's metadata (etag/uploaded/size) before we know how - or
+      // whether - to serve a body. Resolving that with one head() call lets
+      // us evaluate everything locally instead of round-tripping to R2 once
+      // per condition via `onlyIf`.
+      if (request.method === "HEAD" || rangeHeader !== null || hasPreconditions) {
+        file = await retryAsync(env, () => env.R2_BUCKET.head(path));
 
-        if (isNaN(maybeDate) || new Date(maybeDate) > file.uploaded) {
-          // httpEtag already has quotes, no need to use getHeaderEtag
-          if (ifRange.startsWith("W/") || ifRange !== file.httpEtag)
-            range = undefined;
+        if (file !== null) {
+          if (rangeHeader !== null) {
+            const parsed = parseRangeHeader(file.size, rangeHeader);
+            if (parsed === "unsatisfiable") {
+              return new Response("Range Not Satisfiable", { status: 416 });
+            }
+            range = parsed;
+          }
+
+          if (range && ifRange) {
+            const maybeDate = Date.parse(ifRange);
+
+            if (isNaN(maybeDate) || new Date(maybeDate) > file.uploaded) {
+              // httpEtag already has quotes, no need to use getHeaderEtag
+              if (ifRange.startsWith("W/") || ifRange !== file.httpEtag)
+                range = undefined;
+            }
+          }
+
+          const verdict = evaluatePreconditions(file, {
+            ifMatch,
+            ifNoneMatch,
+            ifModifiedSince,
+            ifUnmodifiedSince,
+            ifRange,
+          });
+          if (verdict === 412) {
+            return new Response("Precondition Failed", {
+              status: 412,
+              headers: fileHeaders(file, env, request),
+            });
+          }
+          if (verdict === 304) {
+            return new Response(null, {
+              status: 304,
+              headers: fileHeaders(file, env, request, { "accept-ranges": "bytes" }),
+            });
+          }
         }
       }
 
-      if (ifMatch || ifUnmodifiedSince) {
-        file = await retryAsync(env, () =>
-          env.R2_BUCKET.get(path, {
-            onlyIf: {
-              etagMatches: ifMatch,
-              uploadedBefore: ifUnmodifiedSince
-                ? new Date(ifUnmodifiedSince)
-                : undefined,
-            },
-            range,
-          })
-        );
-
-        if (file && !hasBody(file)) {
-          return new Response("Precondition Failed", { status: 412 });
-        }
+      if (request.method === "GET" && file !== null) {
+        file = await retryAsync(env, () => env.R2_BUCKET.get(path, { range }));
       }
-
-      if (ifNoneMatch || ifModifiedSince) {
-        // if-none-match overrides if-modified-since completely
-        if (ifNoneMatch) {
-          file = await retryAsync(env, () =>
-            env.R2_BUCKET.get(path, {
-              onlyIf: { etagDoesNotMatch: ifNoneMatch },
-              range,
-            })
-          );
-        } else if (ifModifiedSince) {
-          file = await retryAsync(env, () =>
-            env.R2_BUCKET.get(path, {
-              onlyIf: { uploadedAfter: new Date(ifModifiedSince) },
-              range,
-            })
-          );
-        }
-        if (file && !hasBody(file)) {
-          return new Response(null, { status: 304 });
-        }
-      }
-
-      file =
-        request.method === "HEAD"
-          ? await retryAsync(env, () => env.R2_BUCKET.head(path))
-          : file && hasBody(file)
-          ? file
-          : await retryAsync(env, () => env.R2_BUCKET.get(path, { range }));
+      // Every code path above sets `file` for both GET and HEAD (the only
+      // methods reachable here); this just lets TypeScript see that too.
+      file = file ?? null;
 
       let notFound: boolean = false;
 
@@ -197,32 +197,41 @@ export default {
           contentLength = rangeHasLength(range) ? range.length : range.suffix;
         }
         let { readable, writable } = new FixedLengthStream(contentLength);
-        file.body.pipeTo(writable);
+        // pipeTo's promise rejects if the R2 read fails mid-stream (e.g. the
+        // object changed underneath us). The failure still propagates to the
+        // client via the aborted `readable` side; this catch only prevents an
+        // unhandled rejection from the pipe itself. Deliberately not wrapped
+        // in ctx.waitUntil: the pipe only drains once something reads
+        // `readable` (i.e. the response body is consumed), so waiting on it
+        // here would block returning the response.
+        file.body.pipeTo(writable).catch((err) => {
+          if (env.LOGGING) console.error("Error piping R2 object body:", err);
+        });
         body = readable;
       }
       response = new Response(body, {
         status: notFound ? 404 : range ? 206 : 200,
-        headers: {
+        headers: buildHeaders({
           "accept-ranges": "bytes",
-          "access-control-allow-origin": corsOriginHeader(env),
+          ...corsHeaders(request, env),
 
-          etag: notFound ? "" : file.httpEtag,
+          etag: notFound ? undefined : file.httpEtag,
           // if the 404 file has a custom cache control, we respect it
           "cache-control":
             file.httpMetadata?.cacheControl ??
-            (notFound ? "" : env.CACHE_CONTROL || ""),
-          expires: file.httpMetadata?.cacheExpiry?.toUTCString() ?? "",
-          "last-modified": notFound ? "" : file.uploaded.toUTCString(),
+            (notFound ? undefined : env.CACHE_CONTROL),
+          expires: file.httpMetadata?.cacheExpiry?.toUTCString(),
+          "last-modified": notFound ? undefined : file.uploaded.toUTCString(),
 
-          "content-encoding": file.httpMetadata?.contentEncoding ?? "",
+          "content-encoding": file.httpMetadata?.contentEncoding,
           "content-type":
             file.httpMetadata?.contentType ?? "application/octet-stream",
-          "content-language": file.httpMetadata?.contentLanguage ?? "",
-          "content-disposition": file.httpMetadata?.contentDisposition ?? "",
+          "content-language": file.httpMetadata?.contentLanguage,
+          "content-disposition": file.httpMetadata?.contentDisposition,
           "content-range":
-            range && !notFound ? getRangeHeader(range, file.size) : "",
+            range && !notFound ? getRangeHeader(range, file.size) : undefined,
           "content-length": contentLength.toString(),
-        },
+        }),
       });
 
       if (request.method === "GET" && !range && isCachingEnabled && !notFound)

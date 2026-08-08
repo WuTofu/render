@@ -1,5 +1,5 @@
 import { Env } from "./env";
-import { corsOriginHeader } from "./headers";
+import { buildHeaders, corsHeaders } from "./headers";
 
 const units = ["B", "KB", "MB", "GB", "TB"];
 
@@ -143,11 +143,11 @@ ${htmlList.join("\n")}
 
   return new Response(html === "" ? null : html, {
     status: 200,
-    headers: {
-      "access-control-allow-origin": corsOriginHeader(env),
-      "last-modified": lastModified === null ? "" : lastModified.toUTCString(),
+    headers: buildHeaders({
+      "last-modified": lastModified?.toUTCString(),
       "content-type": "text/html",
       "cache-control": env.DIRECTORY_CACHE_CONTROL || "no-store",
-    },
+      ...corsHeaders(request, env),
+    }),
   });
 }

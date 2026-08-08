@@ -1,5 +1,5 @@
 import { env as rawEnv, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import type { Env } from "../src/env";
 
@@ -9,9 +9,17 @@ import type { Env } from "../src/env";
 const env = rawEnv as unknown as Env;
 
 async function fetch(path: string, init?: RequestInit): Promise<Response> {
+  return fetchWithEnv(path, {}, init);
+}
+
+async function fetchWithEnv(
+  path: string,
+  envOverrides: Partial<Env>,
+  init?: RequestInit
+): Promise<Response> {
   const request = new Request(`http://example.com${path}`, init);
   const ctx = createExecutionContext();
-  const response = await worker.fetch(request, env, ctx);
+  const response = await worker.fetch(request, { ...env, ...envOverrides }, ctx);
   await waitOnExecutionContext(ctx);
   return response;
 }
@@ -37,9 +45,14 @@ describe("methods", () => {
     expect(res.headers.get("allow")).toBe("GET, HEAD, OPTIONS");
   });
 
-  it("responds to OPTIONS with an allow header", async () => {
+  it("responds to OPTIONS with an allow header and CORS preflight headers", async () => {
     const res = await fetch("/file.txt", { method: "OPTIONS" });
     expect(res.headers.get("allow")).toBe("GET, HEAD, OPTIONS");
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-allow-methods")).toBe(
+      "GET, HEAD, OPTIONS"
+    );
+    expect(res.headers.get("access-control-allow-headers")).toContain("range");
   });
 
   it("serves HEAD with no body", async () => {
@@ -61,6 +74,11 @@ describe("basic GET", () => {
   it("404s on a missing file", async () => {
     const res = await fetch("/nope.txt");
     expect(res.status).toBe(404);
+  });
+
+  it("400s on a malformed percent-encoded path instead of crashing", async () => {
+    const res = await fetch("/%");
+    expect(res.status).toBe(400);
   });
 });
 
@@ -100,13 +118,15 @@ describe("range requests", () => {
 });
 
 describe("preconditions", () => {
-  it("if-none-match hits with a matching etag -> 304", async () => {
+  it("if-none-match hits with a matching etag -> 304 with cache validators", async () => {
     const first = await fetch("/file.txt");
     const etag = first.headers.get("etag")!;
     const res = await fetch("/file.txt", {
       headers: { "if-none-match": etag },
     });
     expect(res.status).toBe(304);
+    expect(res.headers.get("etag")).toBe(etag);
+    expect(res.headers.get("last-modified")).toBeTruthy();
   });
 
   it("if-none-match misses with a non-matching etag -> 200", async () => {
@@ -116,11 +136,14 @@ describe("preconditions", () => {
     expect(res.status).toBe(200);
   });
 
-  it("if-match misses with a non-matching etag -> 412", async () => {
+  it("if-match misses with a non-matching etag -> 412 with cache validators", async () => {
+    const first = await fetch("/file.txt");
+    const realEtag = first.headers.get("etag")!;
     const res = await fetch("/file.txt", {
       headers: { "if-match": '"not-the-real-etag"' },
     });
     expect(res.status).toBe(412);
+    expect(res.headers.get("etag")).toBe(realEtag);
   });
 
   it("if-match hits with a matching etag -> 200", async () => {
@@ -136,6 +159,70 @@ describe("preconditions", () => {
       headers: { "if-modified-since": future },
     });
     expect(res.status).toBe(304);
+  });
+
+  it("if-match takes precedence over if-unmodified-since (RFC 9110 §13.2.2)", async () => {
+    const first = await fetch("/file.txt");
+    const etag = first.headers.get("etag")!;
+    // if-match passes, if-unmodified-since (satisfied by any past date) is
+    // irrelevant to the outcome, but must not be evaluated on its own.
+    const res = await fetch("/file.txt", {
+      headers: {
+        "if-match": etag,
+        "if-unmodified-since": new Date(0).toUTCString(),
+      },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("if-none-match takes precedence over if-modified-since (RFC 9110 §13.2.2)", async () => {
+    const first = await fetch("/file.txt");
+    const etag = first.headers.get("etag")!;
+    // if-none-match fails to preclude (etag doesn't match) -> 200, even
+    // though if-modified-since alone (a future date) would say 304.
+    const future = new Date(Date.now() + 60_000).toUTCString();
+    const res = await fetch("/file.txt", {
+      headers: {
+        "if-none-match": '"not-the-real-etag"',
+        "if-modified-since": future,
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("etag")).toBe(etag);
+  });
+});
+
+describe("R2 operation count", () => {
+  it("costs one R2 call for a plain GET", async () => {
+    const spy = vi.spyOn(env.R2_BUCKET, "get");
+    const headSpy = vi.spyOn(env.R2_BUCKET, "head");
+    try {
+      await fetch("/file.txt");
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(headSpy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      headSpy.mockRestore();
+    }
+  });
+
+  it("costs one R2 call (head only) for a 304", async () => {
+    const first = await fetch("/file.txt");
+    const etag = first.headers.get("etag")!;
+
+    const getSpy = vi.spyOn(env.R2_BUCKET, "get");
+    const headSpy = vi.spyOn(env.R2_BUCKET, "head");
+    try {
+      const res = await fetch("/file.txt", {
+        headers: { "if-none-match": etag },
+      });
+      expect(res.status).toBe(304);
+      expect(headSpy).toHaveBeenCalledTimes(1);
+      expect(getSpy).not.toHaveBeenCalled();
+    } finally {
+      getSpy.mockRestore();
+      headSpy.mockRestore();
+    }
   });
 });
 
@@ -162,5 +249,42 @@ describe("directory listing", () => {
     const html = await res.text();
     expect(html).not.toContain("<b>");
     expect(html).toContain("&lt;b&gt;");
+  });
+});
+
+describe("CORS with a comma-separated ALLOWED_ORIGINS list", () => {
+  const overrides = { ALLOWED_ORIGINS: "https://a.example, https://b.example" };
+
+  it("echoes back a matching origin and sets vary: origin", async () => {
+    const res = await fetchWithEnv("/file.txt", overrides, {
+      headers: { origin: "https://a.example" },
+    });
+    expect(res.headers.get("access-control-allow-origin")).toBe(
+      "https://a.example"
+    );
+    expect(res.headers.get("vary")).toBe("origin");
+  });
+
+  it("omits access-control-allow-origin for a non-matching origin", async () => {
+    const res = await fetchWithEnv("/file.txt", overrides, {
+      headers: { origin: "https://evil.example" },
+    });
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
+    expect(res.headers.get("vary")).toBe("origin");
+  });
+});
+
+describe("empty headers are omitted, not sent blank", () => {
+  it("omits content-range and etag from a 404 response", async () => {
+    const res = await fetch("/does-not-exist.txt");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-range")).toBeNull();
+    expect(res.headers.get("etag")).toBeNull();
+    expect(res.headers.get("last-modified")).toBeNull();
+  });
+
+  it("omits content-range on a non-ranged 200 response", async () => {
+    const res = await fetch("/file.txt");
+    expect(res.headers.get("content-range")).toBeNull();
   });
 });
