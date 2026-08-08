@@ -18,12 +18,16 @@ async function fetch(path: string, init?: RequestInit): Promise<Response> {
 
 const FILE_BODY = "0123456789";
 
+const XSS_NAME = '<img src=x onerror="alert(1)">.txt';
+
 beforeAll(async () => {
   await env.R2_BUCKET.put("file.txt", FILE_BODY, {
     httpMetadata: { contentType: "text/plain" },
   });
   await env.R2_BUCKET.put("dir/a.txt", "a");
   await env.R2_BUCKET.put("dir/b.txt", "b");
+  await env.R2_BUCKET.put(`xss/${XSS_NAME}`, "x");
+  await env.R2_BUCKET.put("xss/<b>/inner.txt", "x");
 });
 
 describe("methods", () => {
@@ -142,5 +146,21 @@ describe("directory listing", () => {
     const html = await res.text();
     expect(html).toContain("a.txt");
     expect(html).toContain("b.txt");
+  });
+
+  it("HTML-escapes object names instead of injecting them raw", async () => {
+    const res = await fetch("/xss/");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).not.toContain("<img src=x onerror");
+    expect(html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;.txt");
+  });
+
+  it("HTML-escapes the request path in the title/heading", async () => {
+    const res = await fetch("/xss/%3Cb%3E/");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).not.toContain("<b>");
+    expect(html).toContain("&lt;b&gt;");
   });
 });

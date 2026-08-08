@@ -3,6 +3,18 @@ import { corsOriginHeader } from "./headers";
 
 const units = ["B", "KB", "MB", "GB", "TB"];
 
+const htmlEscapes: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+export function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (char) => htmlEscapes[char]);
+}
+
 export function niceBytes(x: number) {
   let l = 0,
     n = parseInt(x.toString(), 10) || 0;
@@ -57,7 +69,7 @@ export async function makeListingResponse(
       if (name.startsWith(".") && env.HIDE_HIDDEN_FILES) continue;
       htmlList.push(
         `      <tr>` +
-          `<td><a href="${encodeURIComponent(name)}/">${name}/</a></td>` +
+          `<td><a href="${encodeURIComponent(name)}/">${escapeHtml(name)}/</a></td>` +
           `<td>-</td><td>-</td></tr>`
       );
     }
@@ -71,7 +83,7 @@ export async function makeListingResponse(
 
       htmlList.push(
         `      <tr>` +
-          `<td><a href="${encodeURIComponent(name)}">${name}</a></td>` +
+          `<td><a href="${encodeURIComponent(name)}">${escapeHtml(name)}</a></td>` +
           `<td>${dateStr}</td><td>${niceBytes(file.size)}</td></tr>`
       );
 
@@ -83,17 +95,20 @@ export async function makeListingResponse(
     if (listing.truncated) {
       htmlList.push(
         `      <tr>` +
-          `<td><a href="?cursor=${listing.cursor}">...see more.../</a></td>` +
+          `<td><a href="?cursor=${encodeURIComponent(
+            listing.cursor
+          )}">...see more.../</a></td>` +
           `<td>-</td><td>-</td></tr>`
       );
     }
 
     if (path === "") path = "/";
+    const escapedPath = escapeHtml(path);
 
     html = `<!DOCTYPE html>
 <html>
   <head>
-    <title>Index of ${path}</title>
+    <title>Index of ${escapedPath}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta charset="utf-8">
     <style>
@@ -116,7 +131,7 @@ export async function makeListingResponse(
     </style>
   </head>
   <body>
-    <h1>Index of ${path}</h1>
+    <h1>Index of ${escapedPath}</h1>
     <table>
       <tr><th>Filename</th><th>Modified</th><th>Size</th></tr>
 ${htmlList.join("\n")}
