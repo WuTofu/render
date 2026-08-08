@@ -80,6 +80,29 @@ describe("basic GET", () => {
     const res = await fetch("/%");
     expect(res.status).toBe(400);
   });
+
+  it("passes through a pre-compressed object's content-encoding and body untouched", async () => {
+    // Guards against workerd's `brotli_content_encoding` compat flag (2024-04-29)
+    // treating a stored `br`/`gzip` content-encoding as something to negotiate
+    // or transcode rather than an opaque passthrough header.
+    const compressed = "not actually compressed, just bytes";
+    await env.R2_BUCKET.put("compressed.br", compressed, {
+      httpMetadata: { contentType: "text/plain", contentEncoding: "br" },
+    });
+    const res = await fetch("/compressed.br");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-encoding")).toBe("br");
+    expect(res.headers.get("content-length")).toBe(String(compressed.length));
+    expect(await res.text()).toBe(compressed);
+  });
+
+  it("resolves a dot-segment path the same way the runtime's URL parser normalizes it", async () => {
+    // Guards against `specCompliantUrl` (2022-10-31) changing how `.`/`..`
+    // segments in the pathname are collapsed before we look up the R2 key.
+    const res = await fetch("/dir/../file.txt");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(FILE_BODY);
+  });
 });
 
 describe("range requests", () => {
