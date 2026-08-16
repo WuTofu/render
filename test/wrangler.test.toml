@@ -5,10 +5,9 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ALLOWED_ORIGINS = "*"
-# Caching is disabled for tests so each request is evaluated fresh instead of
-# being served from the Cache API (which matches by URL only, ignoring
-# conditional/range headers) — that's what makes precondition/range tests
-# deterministic across runs.
+# Caching is disabled for tests so each request is evaluated fresh against R2
+# instead of being served from the Cache API — that's what makes
+# precondition/range tests deterministic across runs.
 CACHE_CONTROL = "no-store"
 PATH_PREFIX = ""
 INDEX_FILE = ""

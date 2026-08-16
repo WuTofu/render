@@ -39,6 +39,8 @@ You can do this from a fork, if using the [GitHub Actions method](#method-2-gith
 
 You may edit `CACHE_CONTROL` to the default [`cache-control` header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) or remove it entirely to fall back to nothing. If you set `CACHE_CONTROL` to `"no-store"` then Cloudflare caching will not be used.
 
+An edge cache hit is always revalidated against R2's live etag before being served (one extra read op, no body transfer), so a re-uploaded object is visible on the very next request regardless of `max-age`. Browser caches can't be revalidated from the server, though — a client that already cached a response under a given `max-age` won't ask again until it expires, so pick `"public, no-cache"` if you need re-uploads to show up immediately everywhere. A `cacheControl` value set in an object's R2 metadata overrides `CACHE_CONTROL` for that object.
+
 ### Deploying
 
 Note: Due to how custom domains for workers work, you MUST use a route to take advantage of caching. Cloudflare may fix this soon.

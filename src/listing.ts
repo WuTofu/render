@@ -1,5 +1,5 @@
 import { Env } from "./env";
-import { buildHeaders, corsHeaders } from "./headers";
+import { buildHeaders, corsHeaders, hasNoStoreDirective } from "./headers";
 
 const units = ["B", "KB", "MB", "GB", "TB"];
 
@@ -151,4 +151,34 @@ ${htmlList.join("\n")}
       ...corsHeaders(request, env),
     }),
   });
+}
+
+/**
+ * Directory listings have no etag to revalidate against, so unlike file
+ * responses they're served straight from the cache (when caching is on and
+ * the request has no preconditions) and are only as fresh as their own
+ * `cache-control`/`DIRECTORY_CACHE_CONTROL` TTL allows.
+ */
+export async function respondWithListing(
+  path: string,
+  env: Env,
+  request: Request,
+  ctx: ExecutionContext,
+  cache: Cache,
+  isCachingEnabled: boolean,
+  hasPreconditions: boolean
+): Promise<Response | null> {
+  if (isCachingEnabled && !hasPreconditions) {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+  }
+
+  const listResponse = await makeListingResponse(path, env, request);
+  if (
+    listResponse !== null &&
+    !hasNoStoreDirective(listResponse.headers.get("cache-control"))
+  ) {
+    ctx.waitUntil(cache.put(request, listResponse.clone()));
+  }
+  return listResponse;
 }

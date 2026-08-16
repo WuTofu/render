@@ -13,7 +13,19 @@ ALLOWED_ORIGINS = "*"
 # The `cache-control` header: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control.
 # Optional, the `cache-control` header is omitted if unset, which would NOT disable caching: https://developers.cloudflare.com/workers/runtime-apis/cache/#headers
 # For example, you can disable all cache by setting this to `no-store`.
-CACHE_CONTROL = "public, max-age=86400"
+#
+# Edge cache hits are always revalidated against R2's live etag before being
+# served, so a re-upload is visible on the very next request no matter what
+# you set here. Browser caches can't be revalidated by the server though -
+# once a client has cached a response for `max-age`, nothing server-side can
+# make it ask again before that expires.
+#
+# Filenames are content-hashed, so a given URL's bytes never change - it's
+# safe to cache client-side with `immutable` for as long as we're willing to
+# tolerate a stale reference if a hash were ever reused. max-age is capped at
+# two weeks rather than the usual year-long immutable convention.
+# A per-object `cacheControl` set in R2 metadata overrides this value.
+CACHE_CONTROL = "public, max-age=1209600, immutable"
 
 # The string to prepend to each file path. Optional, nothing is prepended to the path if unset.
 PATH_PREFIX = ""

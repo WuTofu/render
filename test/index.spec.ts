@@ -213,6 +213,76 @@ describe("preconditions", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("etag")).toBe(etag);
   });
+
+  it("does not serve a stale 304 from the edge cache", async () => {
+    // Simulate an edge cache entry from before the object was re-uploaded:
+    // the Cache API would evaluate if-modified-since itself and return a
+    // stale 304 for it. Conditional requests must skip that lookup and
+    // validate against R2 instead.
+    const matchSpy = vi.spyOn(caches.default, "match").mockResolvedValue(
+      new Response(null, {
+        status: 304,
+        headers: { "last-modified": new Date(0).toUTCString() },
+      })
+    );
+    const headSpy = vi.spyOn(env.R2_BUCKET, "head");
+    try {
+      const res = await fetchWithEnv(
+        "/file.txt",
+        { CACHE_CONTROL: "public, max-age=86400" },
+        { headers: { "if-modified-since": new Date(0).toUTCString() } }
+      );
+      expect(res.status).toBe(200);
+      expect(matchSpy).not.toHaveBeenCalled();
+      expect(headSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      matchSpy.mockRestore();
+      headSpy.mockRestore();
+    }
+  });
+
+  it("serves a cache hit only after revalidating the etag", async () => {
+    const first = await fetch("/file.txt");
+    const etag = first.headers.get("etag")!;
+    const cached = new Response(FILE_BODY, { status: 200, headers: { etag } });
+    const matchSpy = vi.spyOn(caches.default, "match").mockResolvedValue(cached);
+    const getSpy = vi.spyOn(env.R2_BUCKET, "get");
+    const headSpy = vi.spyOn(env.R2_BUCKET, "head");
+    try {
+      const res = await fetchWithEnv("/file.txt", {
+        CACHE_CONTROL: "public, max-age=86400",
+      });
+      expect(res).toBe(cached);
+      expect(headSpy).toHaveBeenCalledTimes(1);
+      expect(getSpy).not.toHaveBeenCalled();
+    } finally {
+      matchSpy.mockRestore();
+      getSpy.mockRestore();
+      headSpy.mockRestore();
+    }
+  });
+
+  it("re-fetches when the cached copy's etag is stale", async () => {
+    // A re-upload changed the object's etag since this entry was cached;
+    // the stale body must not be served.
+    const cached = new Response("stale body", {
+      status: 200,
+      headers: { etag: '"stale"' },
+    });
+    const matchSpy = vi.spyOn(caches.default, "match").mockResolvedValue(cached);
+    const getSpy = vi.spyOn(env.R2_BUCKET, "get");
+    try {
+      const res = await fetchWithEnv("/file.txt", {
+        CACHE_CONTROL: "public, max-age=86400",
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe(FILE_BODY);
+      expect(getSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      matchSpy.mockRestore();
+      getSpy.mockRestore();
+    }
+  });
 });
 
 describe("R2 operation count", () => {
