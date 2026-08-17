@@ -3,7 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2026-08-01"
 # Set this to false if you don't want to use the default *.workers.dev route.
 # Note that *.workers.dev routes don't support native worker-level caching: https://developers.cloudflare.com/workers/runtime-apis/cache/
-workers_dev = true
+workers_dev = false
 
 [vars]
 # The `access-control-allow-origin` header: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Origin
